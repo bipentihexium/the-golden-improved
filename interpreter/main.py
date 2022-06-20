@@ -1,60 +1,9 @@
 from math import ceil, floor
-from random import random
+from random import random, uniform
 import sys
-from copy import deepcopy
 import os
 import re
 from time import sleep
-
-class BracketsMatcher:
-	def __init__(self):
-		self.brackets = {
-			"while": {},
-			"do_while": {},
-			"while_local": {},
-			"do_while_local": {}
-		}
-		self.brackets_mem = []
-		self.bracket_keys = {
-			"[": "while",
-			"]": "while",
-			"[@": "do_while",
-			"@]": "do_while",
-			"'[": "while_local",
-			"']": "while_local",
-			"'[@": "do_while_local",
-			"'@]": "do_while_local"
-		}
-		self.ending_brackets_keys = {
-			"while": "]",
-			"do_while": "@]",
-			"while_local": "']",
-			"do_while_local": "'@]"
-		}
-
-	def match(self, code):
-		for i in range(len(code)):
-			char = code[i]
-			if not char in ["[", "]", "[@", "@]", "'[", "']", "'[@", "'@]"]:
-				continue
-			if char in ["[", "[@", "'[", "'[@"]:
-				self.brackets_mem.append([char, i, 0])
-			for key in range(len(self.brackets_mem)):
-				self.brackets_mem[key][2] += self.num_equals(self.brackets_mem[key][0], char)
-				wanted_end = self.ending_brackets_keys[self.bracket_keys[self.brackets_mem[key][0]]]
-				if self.brackets_mem[key][2] == 0 and char == wanted_end:
-					cat = self.bracket_keys[wanted_end]
-					self.brackets[cat][self.brackets_mem[key][1]] = i
-					self.brackets[cat][i] = self.brackets_mem[key][1]
-					self.brackets_mem.pop(key)
-
-			
-	def num_equals(self, left, right):
-		if self.bracket_keys[left] != self.bracket_keys[right]:
-			return 0
-		if left == right:
-			return 1
-		return -1
 
 class Lexer:
 	def __init__(self, text, rules, file):
@@ -86,67 +35,73 @@ class Lexer:
 				return (command, self.line, self.column, self.file)
 		raise_error(("Syntax error at %d:%d in %s" % (self.line, self.column, self.file)), 1)
 
-class Validator:
-	def run(self, lex: Lexer):
-		p = None
-		t = lex.next()
-		while t:
-			p = t
-			t = lex.next()
-		if not re.match(":\r?\n?", p[0]):
-			raise_error(("Syntax error at %d:%d in %s - ':' expected" % (lex.line, lex.column, lex.file)), 1)
-
 class Parser:
 	def __init__(self, flags):
-		self.whiles = {}
-		self.do_whiles = {}
-		self.commands = []
-		self.commands_info = []
 		self.flags = flags
-
-	def run(self, lex: Lexer):
-		t = lex.next()
-		while t:
-			if "--debug" in self.flags:
-				print(t)
-			if '"' in t[0] or ":" in t[0]:
-				t = lex.next()
-				continue
-			self.commands_info.append(t)
-			self.commands.append(t[0])
-			t = lex.next()
+		self.t = None
+	def parse(self, lex:Lexer):
+		self.t = lex.next()
+		block = []
+		while self.t and self.t[0] != "]" and self.t[0] != "@]" and self.t[0] != ")":
+			block.append(self.parsecmd())
+		return block
+	def parsecmd(self, lex:Lexer):
+		while '"' in self.t[0] or ":" in self.t[0] or self.t[0].isspace():
+			self.t = lex.next()
+			if not self.t:
+				raise_error(("Syntax error at %d:%d in %s - expected a command" % (self.t[1], self.t[2], self.t[3])))
+		if self.t[0] == "'" or self.t[0].startswith("|"):
+			token = self.t
+			out = (token, self.parsecmd(lex))
+		elif self.t[0] == "[" or self.t[0] == "[@" or self.t[0] == "(":
+			closetok = {"[":"]", "[@":"@]", "(":")"}[self.t[0]]
+			token = self.t
+			out = (token, self.parse(lex))
+			if self.t != closetok:
+				raise_error(("Syntax error at %d:%d in %s - expected '%s'" % (self.t[1], self.t[2], self.t[3])))
+		else:
+			out = token
+		self.t = lex.next()
+		return out
 
 class Runner:
 	def __init__(self, root_path, warner, flags):
 		self.root_path = root_path
 		self.valid_commands = [
-			# (\|[0-9]*\|)* lets you do |x|<command>, which will execute the command x times (leaving it empty will execute it <active cell value>.floor() times)
-			"'?(\|[0-9]*\|)*!", # increment
-			"'?(\|[0-9]*\|)*~", # decrement
-			"'?(\|[0-9]*\|)*\+", # add
-			"'?(\|[0-9]*\|)*\-", # subtract
-			"'?(\|[0-9]*\|)*\*", # multiply
-			"'?(\|[0-9]*\|)*\/", # divide
-			"'?`", # generate a random number from 0 (inclusive) to 1 (exclusive)
-			"'?(\|[0-9]*\|)*\>", # move right
-			"'?(\|[0-9]*\|)*\<", # move left
-			"'?\_", # floor
-			"'?\&", # ceil
-			"'?\^", # switch active memory
-			"'?\\[@", # do-while start
-			"'?@\\]", # do-while end
-			"'?\\[", # while start
-			"'?\\]", # while end
-			"'?\\$.", # input number
-			"'?\$\,", # input string
-			"'?\\\\.", # output number
-			"'?\\\\,", # output string
-			"'?(\|[0-9]*\|)*\?\?", # set the cell to its index
-			"'?(\|[0-9]*\|)*\?\=", # if the active memory cell = the not active memory cell, break
-			"'?(\|[0-9]*\|)*\?\<", # if the active memory cell < the not active memory cell, break
-			"'?(\|[0-9]*\|)*\?\>", # if the active memory cell > the not active memory cell, break
+			"'", # local-
+			"\\|\\|", # repeat by value-
+			"\\|\\-?[0-9]+\\|", # repeat by constant-
+			"!", # increment
+			"~", # decrement
+			"\\+", # add
+			"\\-", # subtract
+			"\\*", # multiply
+			"\\/", # divide
+			"`", # generate a random number from 0 (inclusive) to 1 (exclusive)
+			"\\>", # move right
+			"\\<", # move left
+			"\\_", # floor
+			"\\&", # ceil
+			"\\^", # switch active memory
+			"\\[@", # do-while start
+			"@\\]", # do-while end
+			"\\[", # while start
+			"\\]", # while end
+			"\\{", # function ptr left
+			"\\}", # function ptr right
+			"\\(", # function def start
+			"\\)", # function def end
+			"%", # function call
+			"\\$.", # input number
+			"\\$\,", # input string
+			"\\\\.", # output number
+			"\\\\,", # output string
+			"\\?\\?", # set the cell to its index
+			"\\?\\=", # if the active memory cell = the not active memory cell, break
+			"\\?\\<", # if the active memory cell < the not active memory cell, break
+			"\\?\\>", # if the active memory cell > the not active memory cell, break
 			";", # switch value of the active local memory cell and global memory cell
-			":\r?\n?", # end of line
+			":\r?\n", # end of line
 			":$", # end of line with any character after
 			"\"[^\"]*\"", # comments
 			"[ \t\f\v]" # whitespace
@@ -159,16 +114,17 @@ class Runner:
 			"*": "/",
 			"/": "*",
 			">": "<",
-			"<": ">"
+			"<": ">",
+			"{": "}"
 		}
-		self.commands = []
-		self.commands_info = []
-		self.brackets = {}
 		self.memory = [[0.0], [0.0]]
 		self.pointers_mem = [0, 0]
-		self.active_mem = 0
-		self.program_pointer = 0
-		self.loops = []
+		self.functions = [None]
+		self.pointer_func = 0
+		self.program = []
+		self.programstack = []
+		self.mem_stack = []
+		self.pointers_mem_stack = []
 		self.warner = warner
 		self.flags = flags
 
@@ -182,148 +138,198 @@ class Runner:
 		self.run(program, "<input_main>")
 
 	def run(self, program, file):
-		local_memory = [[0.0], [0.0]]
-		local_pointers_mem = [0, 0]
-		local_active_mem = 0
 		lexer = Lexer(program, self.valid_commands, file)
-		validator = Validator()
-		validator.run(deepcopy(lexer))
 		parser = Parser(self.flags)
-		parser.run(deepcopy(lexer))
-		self.commands = parser.commands
-		self.commands_info = parser.commands_info
+		self.program = parser.parse(lexer)
 		if "--debug" in self.flags:
 			print("Program:")
 			print(repr(program))
 			print("Commands:")
-			print(self.commands)
-		brackets_matcher = BracketsMatcher()
-		brackets_matcher.match(self.commands)
-		brackets_holder = brackets_matcher.brackets
-		for loop_type in brackets_holder:
-			for key in brackets_holder[loop_type]:
-				self.brackets[key] = brackets_holder[loop_type][key]
-		while self.program_pointer < len(self.commands):
-			command = self.commands[self.program_pointer]
-			(local_memory, local_pointers_mem, local_active_mem) = self.eval_command(command, local_memory, local_pointers_mem, local_active_mem)
+			print(repr(self.program))
+		self.run_call(self.program)
 		if "--debug" in self.flags:
 			print("\nMain memory:")
 			print(self.memory)
 			print("Local memory:")
-			print(local_memory)
+			print(self.mem_stack)
+	def run_call(self, block):
+		self.mem_stack.append([[0.0],[0.0]])
+		self.pointers_mem_stack.append([0, 0])
+		self.run_block(block)
+		self.mem_stack.pop()
+		self.pointers_mem_stack.pop()
+	def run_block(self, block):
+		for cmd in block:
+			if self.run_command(cmd):
+				break
+			if "--debug-heavy" in self.flags:
+				print("Command:")
+				print(cmd)
+				print("Global memory:")
+				print(self.memory)
+				print("Global memory pointers:")
+				print(self.pointers_mem)
+				print("Active global memory:")
+				sleep(0.5)
+	def run_command(self, command, local=False, repeat=1):
+		cmdi = command if command[0] is str else command[0]
+		cmdstr = cmdi[0]
+		if cmdstr == "'":
+			self.run_command(command[1], True, repeat)
+		elif cmdstr == "||":
+			self.run_command(command[1], False, repeat * self.get_cell(local)) # False here is intentional
+		elif cmdstr.startswith("|"):
+			self.run_command(command[1], False, repeat * int(cmdstr[1:-1])) # False here is intentional
+		elif cmdstr == "[@":
+			if repeat != 1:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat loops" % (cmdi[1], cmdi[2], cmdi[3])))
+			self.run_block(command[1])
+			while self.get_cell(local) != 0:
+				self.run_block(command[1])
+		elif cmdstr == "[":
+			if repeat != 1:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat loops" % (cmdi[1], cmdi[2], cmdi[3])))
+			while self.get_cell(local) != 0:
+				self.run_block(command[1])
+		elif cmdstr == "(":
+			if repeat != 1:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat function definition" % (cmdi[1], cmdi[2], cmdi[3])))
+			self.functions[self.pointer_func] = command[1]
+		else:
+			return self.run_basic_command(cmdstr, cmdi, local, repeat)
+		return False
+	def run_basic_command(self, command, commandinfo, local=False, repeat=1):
+		if command == "!":
+			self.set_cell(self.get_cell(local) + repeat, local)
+		elif command == "~":
+			self.set_cell(self.get_cell(local) - repeat, local)
+		elif command == "+":
+			self.set_cell(self.get_cell(local) + self.get_cell(local, False) * repeat, local)
+		elif command == "-":
+			self.set_cell(self.get_cell(local) - self.get_cell(local, False) * repeat, local)
+		elif command == "*":
+			self.set_cell(self.get_cell(local) * self.get_cell(local, False) * repeat, local)
+		elif command == "/":
+			self.set_cell(self.get_cell(local) / self.get_cell(local, False) * repeat, local)
+		elif command == "`":
+			self.set_cell(uniform(0, 1), local)
+		elif command == ">":
+			if local:
+				mem = self.mem_stack[-1]
+				ptrs = self.pointers_mem_stack[-1]
+			else:
+				mem = self.memory
+				ptrs = self.pointers_mem
+			ptrs[0] += repeat
+			while ptrs[0] < 0:
+				ptrs[0] += 1
+				mem[0].insert(0, 0.0)
+			while ptrs[0] > len(mem[0]):
+				mem[0].append(0.0)
+		elif command == "<":
+			if local:
+				mem = self.mem_stack[-1]
+				ptrs = self.pointers_mem_stack[-1]
+			else:
+				mem = self.memory
+				ptrs = self.pointers_mem
+			ptrs[0] -= repeat
+			while ptrs[0] < 0:
+				ptrs[0] += 1
+				mem[0].insert(0, 0.0)
+			while ptrs[0] > len(mem[0]):
+				mem[0].append(0.0)
+		elif command == "_":
+			self.set_cell(floor(self.get_cell(local)), local)
+		elif command == "&":
+			self.set_cell(ceil(self.get_cell(local)), local)
+		elif command == "^":
+			if repeat % 2 == 0:
+				return False
+			if local:
+				self.mem_stack[-1][0], self.mem_stack[-1][1] = self.mem_stack[-1][1], self.mem_stack[-1][0]
+				self.pointers_mem_stack[-1][0], self.pointers_mem_stack[-1][1] = self.pointers_mem_stack[-1][1], self.pointers_mem_stack[-1][0]
+			else:
+				self.memory[0], self.memory[1] = self.memory[1], self.memory[0]
+				self.pointers_mem[0], self.pointers_mem[1] = self.pointers_mem[1], self.pointers_mem[0]
+		elif command == "{":
+			self.pointer_func -= repeat
+			while self.pointer_func < 0:
+				self.pointer_func += 1
+				self.functions.insert(0, None)
+			while self.pointer_func > len(self.functions):
+				self.functions.append(None)
+		elif command == "}":
+			self.pointer_func += repeat
+			while self.pointer_func < 0:
+				self.pointer_func += 1
+				self.functions.insert(0, None)
+			while self.pointer_func > len(self.functions):
+				self.functions.append(None)
+		elif command == "%":
+			if repeat < 0:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat function calls negative number of times" % (commandinfo[1], commandinfo[2], commandinfo[3])))
+			f = self.functions[self.pointer_func]
+			for _ in range(repeat):
+				self.run_call(f)
+		elif command == "$.":
+			if repeat != 1:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat number input" % (commandinfo[1], commandinfo[2], commandinfo[3])))
+			self.set_cell(float(input()), local)
+		elif command == "$,":
+			if repeat != 1:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat character input" % (commandinfo[1], commandinfo[2], commandinfo[3])))
+			self.set_cell(ord(sys.stdin.read(1)), local)
+		elif command == "\.":
+			if repeat < 0:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat number output negative number of times" % (commandinfo[1], commandinfo[2], commandinfo[3])))
+			print(str(self.get_cell(local)) * repeat, end="")
+		elif command == "\,":
+			if repeat < 0:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat character output negative number of times" % (commandinfo[1], commandinfo[2], commandinfo[3])))
+			print(chr(int(self.get_cell(local))) * repeat, end="")
+		elif command == "??":
+			if repeat != 1:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat 'set to index'" % (commandinfo[1], commandinfo[2], commandinfo[3])))
+			self.set_cell(self.pointers_mem_stack[-1][0] if local else self.pointers_mem[0], local)
+		elif command == "?>":
+			if repeat != 1:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat conditional breaks" % (commandinfo[1], commandinfo[2], commandinfo[3])))
+			if self.get_cell(local) > self.get_cell(local, False):
+				return True
+		elif command == "?=":
+			if repeat != 1:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat conditional breaks" % (commandinfo[1], commandinfo[2], commandinfo[3])))
+			if self.get_cell(local) == self.get_cell(local, False):
+				return True
+		elif command == "?<":
+			if repeat != 1:
+				raise_error(("Runtime error at %d:%d in %s - can't repeat conditional breaks" % (commandinfo[1], commandinfo[2], commandinfo[3])))
+			if self.get_cell(local) < self.get_cell(local, False):
+				return True
+		elif command == ";":
+			if repeat % 2 == 0:
+				return False
+			if local:
+				raise_error(("Runtime error at %d:%d in %s - local-global value switch can't be local" % (commandinfo[1], commandinfo[2], commandinfo[3])))
+			tmp = self.get_cell()
+			self.set_cell(self.get_cell(True))
+			self.set_cell(tmp, True)
+		return False
 
-	def eval_command(self, command: str, local_memory, local_pointers_mem, local_active_mem):
-		is_local = command.startswith("'")
-		if is_local:
-			command = command[1:]
-		# print(command, command.count("|"))
-		(main_mem, main_mem_ptr, main_act) = (local_memory, local_pointers_mem, local_active_mem) if is_local else (self.memory, self.pointers_mem, self.active_mem)
-		(loc_mem, loc_mem_ptr, loc_act) = (self.memory, self.pointers_mem, self.active_mem) if is_local else (local_memory, local_pointers_mem, local_active_mem)
+	def get_cell(self, local=False, active=True):
+		active_id = 0 if active else 1
+		if local:
+			return self.mem_stack[-1][active_id][self.pointers_mem_stack[active_id]]
+		else:
+			return self.memory[active_id][self.pointers_mem[active_id]]
+	def set_cell(self, value, local=False, active=True):
+		active_id = 0 if active else 1
+		if local:
+			self.mem_stack[-1][active_id][self.pointers_mem_stack[active_id]] = value
+		else:
+			self.memory[active_id][self.pointers_mem[active_id]] = value
 
-		repeat = 1
-		if command.count("|") == 2:
-			_, num, command = command.split("|")
-			if num == "":
-				num = main_mem[main_act][main_mem_ptr[main_act]]
-			num = int(num)
-			if num < 0:
-				num = abs(num)
-				command = self.opposite_commands[command]
-			repeat = num
-		for _ in range(0, repeat):
-			if command == "!":
-				main_mem[main_act][main_mem_ptr[main_act]] += 1
-			if command == "~":
-				main_mem[main_act][main_mem_ptr[main_act]] -= 1
-			if command == "+":
-				main_mem[main_act][main_mem_ptr[main_act]] += main_mem[abs(main_act-1)][main_mem_ptr[abs(main_act-1)]]
-			if command == "-":
-				main_mem[main_act][main_mem_ptr[main_act]] -= main_mem[abs(main_act-1)][main_mem_ptr[abs(main_act-1)]]
-			if command == "*":
-				main_mem[main_act][main_mem_ptr[main_act]] *= main_mem[abs(main_act-1)][main_mem_ptr[abs(main_act-1)]]
-			if command == "/":
-				main_mem[main_act][main_mem_ptr[main_act]] /= main_mem[abs(main_act-1)][main_mem_ptr[abs(main_act-1)]]
-			if command == "_":
-				main_mem[main_act][main_mem_ptr[main_act]] = floor(main_mem[main_act][main_mem_ptr[main_act]])
-			if command == "&":
-				main_mem[main_act][main_mem_ptr[main_act]] = ceil(main_mem[main_act][main_mem_ptr[main_act]])
-			if command == ">":
-				main_mem_ptr[main_act] += 1
-				if main_mem_ptr[main_act] >= len(main_mem[main_act]):
-					main_mem[main_act].append(0.0)
-			if command == "<":
-				main_mem_ptr[main_act] -= 1
-				if main_mem_ptr[main_act] < 0:
-					main_mem[main_act].insert(0, 0.0)
-					self.warner.warn("too-left-pointer")
-			if command == "^":
-				main_act = abs(main_act-1)
-			if command == "\\.":
-				print(main_mem[main_act][main_mem_ptr[main_act]], end = '')
-			if command == "\\,":
-				print(chr(floor(main_mem[main_act][main_mem_ptr[main_act]])), end = '')
-			if command == "$.":
-				main_mem[main_act][main_mem_ptr[main_act]] = float(input())
-			if command == "$,":
-				main_mem[main_act][main_mem_ptr[main_act]] = ord(sys.stdin.read(1))
-			if command == "[":
-				if main_mem[main_act][main_mem_ptr[main_act]] == 0:
-					if self.program_pointer in self.loops:
-						self.loops.remove(self.program_pointer)
-					self.program_pointer = self.brackets[self.program_pointer]
-				elif not self.program_pointer in self.loops:
-					self.loops.append(self.program_pointer)
-			if command == "]":
-				if main_mem[main_act][main_mem_ptr[main_act]] == 0:
-					if self.program_pointer in self.loops:
-						self.loops.remove(self.program_pointer)
-				else:
-					self.program_pointer = self.brackets[self.program_pointer]
-			if command == "[@":
-				if main_mem[main_act][main_mem_ptr[main_act]] == 0 and self.program_pointer in self.loops:
-					if self.program_pointer in self.loops:
-						self.loops.remove(self.program_pointer)
-					self.program_pointer = self.brackets[self.program_pointer]
-				elif not self.program_pointer in self.loops:
-					self.loops.append(self.program_pointer)
-			if command == "@]":
-				if main_mem[main_act][main_mem_ptr[main_act]] == 0:
-					if self.program_pointer in self.loops:
-						self.loops.remove(self.program_pointer)
-				else:
-					self.program_pointer = self.brackets[self.program_pointer]
-			if command == "`":
-				main_mem[main_act][main_mem_ptr[main_act]] = random()
-			if command == "?=":
-				if main_mem[main_act][main_mem_ptr[main_act]] == main_mem[abs(main_act-1)][main_mem_ptr[abs(main_act-1)]]:
-					self.program_pointer = self.brackets[self.loops.pop()]
-			if command == "?>":
-				if main_mem[main_act][main_mem_ptr[main_act]] > main_mem[abs(main_act-1)][main_mem_ptr[abs(main_act-1)]]:
-					self.program_pointer = self.brackets[self.loops.pop()]
-			if command == "?<":
-				if main_mem[main_act][main_mem_ptr[main_act]] < main_mem[abs(main_act-1)][main_mem_ptr[abs(main_act-1)]]:
-					self.program_pointer = self.brackets[self.loops.pop()]
-			if command == "??":
-				main_mem[main_act][main_mem_ptr[main_act]] = main_mem_ptr[main_act]
-			if command == ";":
-				holder = loc_mem[loc_act][loc_mem_ptr[loc_act]]
-				loc_mem[loc_act][loc_mem_ptr[loc_act]] = main_mem[main_act][main_mem_ptr[main_act]]
-				main_mem[main_act][main_mem_ptr[main_act]] = holder	
-		self.program_pointer += 1
-		self.memory = loc_mem if is_local else main_mem
-		self.pointers_mem = loc_mem_ptr if is_local else main_mem_ptr
-		self.active_mem = loc_act if is_local else main_act
-		if "--debug-heavy" in self.flags:
-			print("Command:")
-			print(command)
-			print("Global memory:")
-			print(self.memory)
-			print("Global memory pointers:")
-			print(self.pointers_mem)
-			print("Active global memory:")
-			print(self.active_mem)
-			sleep(0.5)
-		return (main_mem, main_mem_ptr, main_act) if is_local else (loc_mem, loc_mem_ptr, loc_act)
 
 class Warner:
 	def __init__(self, flags):
